@@ -1,120 +1,104 @@
-const express = require('express');
-const axios = require('axios');
-const app = express();
+const express = require("express");
+const axios = require("axios");
+const NodeID3 = require('node-id3');
 
+const app = express();
 app.use(express.json());
 
-// Function: Jo SoundCloud ke live script se fresh client_id dhoondh ke nikalega
-async function getFreshClientId() {
-    try {
-        // 1. SoundCloud ki home page se script links nikalna
-        const homeResponse = await axios.get('https://soundcloud.com', {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-        });
-        const html = homeResponse.data;
-        
-        // Scripts ko dhoondhne ke liye regex
-        const scriptRegex = /src="([^"]+\/assets\/[^"]+\.js)"/g;
-        let match;
-        const scripts = [];
-        while ((match = scriptRegex.exec(html)) !== null) {
-            scripts.push(match[1]);
-        }
 
-        // 2. Last script ko check karna (aamtaur par isme client_id hoti hai)
-        for (let scriptUrl of scripts.reverse().slice(0, 3)) {
-            const scriptResponse = await axios.get(scriptUrl);
-            const idMatch = scriptResponse.data.match(/client_id\s*:\s*"([a-zA-Z0-9]{32})"/);
-            if (idMatch && idMatch[1]) {
-                return idMatch[1]; // Mil gayi fresh ID!
+// Aapka Default Poster URL
+const DEFAULT_POSTER_URL = "https://i.ibb.co/nqFL3YnZ/1780943911545.png";
+
+let CLIENT_ID = null;
+let LAST_UPDATE = 0;
+
+async function getClientId() {
+    if (CLIENT_ID && (Date.now() - LAST_UPDATE) < 3600000) return CLIENT_ID;
+    try {
+        const home = await axios.get("https://soundcloud.com", { headers: { "User-Agent": "Mozilla/5.0" } });
+        const html = home.data;
+        const files = [...html.matchAll(/src="([^"]+\/assets\/[^"]+\.js)"/g)].map(v => v[1]);
+        for (const file of files.reverse().slice(0, 5)) {
+            const js = await axios.get(file);
+            const match = js.data.match(/client_id\s*:\s*"([a-zA-Z0-9]{32})"/);
+            if (match) {
+                CLIENT_ID = match[1];
+                LAST_UPDATE = Date.now();
+                return CLIENT_ID;
             }
         }
-    } catch (e) {
-        console.error("ID extraction failed, using fallback");
-    }
-    // Fallback ID agar extraction fail ho jaye
-    return '2t9mqaC7aZrr6v6scvW6Y06Z7v0K8A1Z'; 
+    } catch (e) {}
+    CLIENT_ID = "2t9mqaC7aZrr6v6scvW6Y06Z7v0K8A1Z";
+    LAST_UPDATE = Date.now();
+    return CLIENT_ID;
 }
 
-// ROUTE 1: Search Route (With Dynamic Client ID)
-app.get('/search', async (req, res) => {
-    const songQuery = req.query.query;
-    res.setHeader('Content-Type', 'application/json');
+async function getTrackIdByName(query) {
+    const client_id = await getClientId();
+    const res = await axios.get("https://api-v2.soundcloud.com/search/tracks", {
+        params: { q: query, client_id, limit: 5 }
+    });
+    // Poster wale track ko preference denge
+    const track = res.data.collection.find(t => t.artwork_url !== null) || res.data.collection[0];
+    return track || null;
+}
+// Agar poster-embedding timeout ho raha hai, toh ye simple download method use karein
+app.get("/dl2", async (req, res) => {
+    const name = req.query.name;
+    const track = await getTrackIdByName(name);
+    if (!track) return res.status(404).send("Song not found");
 
-    if (!songQuery) {
-        return res.status(400).json({ error: "Please provide a 'query' parameter." });
-    }
+    const client_id = await getClientId();
+    const progressive = track.media?.transcodings?.find(x => x.format.protocol === "progressive");
+    const auth = await axios.get(progressive.url, { params: { client_id } });
 
-    try {
-        const dynamicId = await getFreshClientId();
-        
-        const response = await axios.get(`https://api-v2.soundcloud.com/search/tracks`, {
-            params: {
-                q: songQuery,
-                client_id: dynamicId,
-                limit: 10
-            }
-        });
-
-        const data = response.data;
-
-        if (data && data.collection && data.collection.length > 0) {
-            const results = data.collection.map(track => {
-                const playUrl = `https://${req.get('host')}/play?id=${track.id}`;
-                return {
-                    id: track.id,
-                    title: track.title,
-                    album: track.publisher_metadata?.album_title || "Single",
-                    image: track.artwork_url ? track.artwork_url.replace('large', 't500x500') : 'https://soundcloud.com/favicon.ico',
-                    artist: track.user?.username || "Unknown Artist",
-                    stream_url: playUrl
-                };
-            });
-
-            return res.status(200).json({ success: true, results });
-        }
-
-        return res.status(404).json({ success: false, message: "No songs found." });
-
-    } catch (error) {
-        return res.status(500).json({ error: "Dynamic SoundCloud Search failed", details: error.message });
-    }
+    // Direct pipe, no heavy processing
+    const response = await axios({ method: 'get', url: auth.data.url, responseType: 'stream' });
+    res.setHeader('Content-Disposition', `attachment; filename="${track.title.replace(/[^a-z0-9]/gi, '_')}.mp3"`);
+    response.data.pipe(res);
 });
 
-// ROUTE 2: Play Route (With Dynamic Client ID)
-app.get('/play', async (req, res) => {
-    const trackId = req.query.id;
-
-    if (!trackId) {
-        res.setHeader('Content-Type', 'application/json');
-        return res.status(400).json({ error: "Please provide a track 'id' parameter." });
-    }
-
-    try {
-        const dynamicId = await getFreshClientId();
-
-        const trackResponse = await axios.get(`https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${dynamicId}`);
-        const trackData = trackResponse.data;
-        
-        const progressiveTranscoding = trackData.media?.transcodings?.find(
-            t => t.format.protocol === 'progressive'
-        );
-
-        if (progressiveTranscoding && progressiveTranscoding.url) {
-            const streamAuthResponse = await axios.get(`${progressiveTranscoding.url}?client_id=${dynamicId}`);
-            
-            if (streamAuthResponse.data && streamAuthResponse.data.url) {
-                return res.redirect(streamAuthResponse.data.url);
-            }
-        }
-
-        res.setHeader('Content-Type', 'application/json');
-        return res.status(404).json({ error: "Direct audio stream link not found." });
-
-    } catch (error) {
-        res.setHeader('Content-Type', 'application/json');
-        return res.status(500).json({ error: "Playback failed", details: error.message });
-    }
+// Info Endpoint
+app.get("/info", async (req, res) => {
+    const name = req.query.name;
+    const track = await getTrackIdByName(name);
+    if (!track) return res.status(404).json({ message: "Not found" });
+    
+    res.json({
+        title: track.title,
+        artist: track.user?.username,
+        poster: track.artwork_url ? track.artwork_url.replace("large", "t500x500") : DEFAULT_POSTER_URL,
+        stream: `/play?id=${track.id}`
+    });
 });
 
-module.exports = app;
+// Download Endpoint with your Custom Poster
+app.get("/dl", async (req, res) => {
+    const name = req.query.name;
+    try {
+        const track = await getTrackIdByName(name);
+        const client_id = await getClientId();
+        const progressive = track.media?.transcodings?.find(x => x.format.protocol === "progressive");
+        const auth = await axios.get(progressive.url, { params: { client_id } });
+        
+        const response = await axios({ method: 'get', url: auth.data.url, responseType: 'arraybuffer' });
+        const buffer = Buffer.from(response.data);
+
+        // Aapki image download karna
+        const imgRes = await axios.get(DEFAULT_POSTER_URL, { responseType: 'arraybuffer' });
+        
+        const tags = {
+            title: track.title,
+            artist: track.user?.username || "Vivek",
+            image: { mime: "image/png", type: { id: 3, name: "front cover" }, imageBuffer: Buffer.from(imgRes.data) }
+        };
+
+        const taggedBuffer = NodeID3.update(tags, buffer);
+        res.setHeader('Content-Disposition', `attachment; filename="${track.title.replace(/[^a-z0-9]/gi, '_')}.mp3"`);
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.end(taggedBuffer);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.listen(process.env.PORT || 3000, () => console.log("Server Running"));
+
