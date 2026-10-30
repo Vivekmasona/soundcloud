@@ -1,7 +1,7 @@
 {
-  "name": "soundcloud-hindi-backend",
+  "name": "soundcloud-custom-backend",
   "version": "1.0.0",
-  "description": "Direct SoundCloud v2 API Search for Hindi & Bhojpuri Songs on Vercel",
+  "description": "Custom SoundCloud music backend with auto client_id scraper for Vercel",
   "main": "api/index.js",
   "scripts": {
     "start": "node api/index.js"
