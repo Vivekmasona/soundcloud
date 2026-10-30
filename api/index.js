@@ -1,10 +1,8 @@
 const express = require("express");
 const axios = require("axios");
-const NodeID3 = require('node-id3');
 
 const app = express();
 app.use(express.json());
-
 
 // Aapka Default Poster URL
 const DEFAULT_POSTER_URL = "https://i.ibb.co/nqFL3YnZ/1780943911545.png";
@@ -42,63 +40,55 @@ async function getTrackIdByName(query) {
     const track = res.data.collection.find(t => t.artwork_url !== null) || res.data.collection[0];
     return track || null;
 }
-// Agar poster-embedding timeout ho raha hai, toh ye simple download method use karein
-app.get("/dl2", async (req, res) => {
-    const name = req.query.name;
-    const track = await getTrackIdByName(name);
-    if (!track) return res.status(404).send("Song not found");
 
-    const client_id = await getClientId();
-    const progressive = track.media?.transcodings?.find(x => x.format.protocol === "progressive");
-    const auth = await axios.get(progressive.url, { params: { client_id } });
-
-    // Direct pipe, no heavy processing
-    const response = await axios({ method: 'get', url: auth.data.url, responseType: 'stream' });
-    res.setHeader('Content-Disposition', `attachment; filename="${track.title.replace(/[^a-z0-9]/gi, '_')}.mp3"`);
-    response.data.pipe(res);
-});
-
-// Info Endpoint
+// --- Info Endpoint (Song details + stream link) ---
 app.get("/info", async (req, res) => {
     const name = req.query.name;
-    const track = await getTrackIdByName(name);
-    if (!track) return res.status(404).json({ message: "Not found" });
-    
-    res.json({
-        title: track.title,
-        artist: track.user?.username,
-        poster: track.artwork_url ? track.artwork_url.replace("large", "t500x500") : DEFAULT_POSTER_URL,
-        stream: `/play?id=${track.id}`
-    });
-});
+    if (!name) return res.status(400).json({ error: "name required" });
 
-// Download Endpoint with your Custom Poster
-app.get("/dl", async (req, res) => {
-    const name = req.query.name;
     try {
         const track = await getTrackIdByName(name);
-        const client_id = await getClientId();
-        const progressive = track.media?.transcodings?.find(x => x.format.protocol === "progressive");
-        const auth = await axios.get(progressive.url, { params: { client_id } });
+        if (!track) return res.status(404).json({ message: "Not found" });
         
-        const response = await axios({ method: 'get', url: auth.data.url, responseType: 'arraybuffer' });
-        const buffer = Buffer.from(response.data);
-
-        // Aapki image download karna
-        const imgRes = await axios.get(DEFAULT_POSTER_URL, { responseType: 'arraybuffer' });
-        
-        const tags = {
+        res.json({
+            success: true,
             title: track.title,
-            artist: track.user?.username || "Vivek",
-            image: { mime: "image/png", type: { id: 3, name: "front cover" }, imageBuffer: Buffer.from(imgRes.data) }
-        };
-
-        const taggedBuffer = NodeID3.update(tags, buffer);
-        res.setHeader('Content-Disposition', `attachment; filename="${track.title.replace(/[^a-z0-9]/gi, '_')}.mp3"`);
-        res.setHeader('Content-Type', 'audio/mpeg');
-        res.end(taggedBuffer);
-    } catch (e) { res.status(500).json({ error: e.message }); }
+            artist: track.user?.username || "Unknown",
+            poster: track.artwork_url ? track.artwork_url.replace("large", "t500x500") : DEFAULT_POSTER_URL,
+            stream: `/play?id=${track.id}`
+        });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
 });
 
-app.listen(process.env.PORT || 3000, () => console.log("Server Running"));
+// --- Play / Stream Redirect Endpoint ---
+app.get("/play", async (req, res) => {
+    const id = req.query.id;
+    if (!id) return res.status(400).json({ error: "id required" });
 
+    try {
+        const client_id = await getClientId();
+        const trackRes = await axios.get(`https://api-v2.soundcloud.com/tracks/${id}`, { params: { client_id } });
+        const track = trackRes.data;
+
+        if (!track) return res.status(404).json({ message: "Song not found" });
+
+        const progressive = track.media?.transcodings?.find(x => x.format.protocol === "progressive");
+        if (!progressive) return res.status(404).json({ message: "Stream not found" });
+
+        const auth = await axios.get(progressive.url, { params: { client_id } });
+        if (auth.data.url) return res.redirect(auth.data.url);
+        
+        res.status(404).json({ message: "No playable stream" });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+if (process.env.NODE_ENV !== 'production') {
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => console.log("Server Running on port " + PORT));
+}
+
+module.exports = app;
