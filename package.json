@@ -1,7 +1,7 @@
 {
-  "name": "indian-regional-music-backend",
+  "name": "soundcloud-hindi-backend",
   "version": "1.0.0",
-  "description": "Indian Regional Music Search & Direct Stream CDN API",
+  "description": "Direct SoundCloud v2 API Search for Hindi & Bhojpuri Songs on Vercel",
   "main": "api/index.js",
   "scripts": {
     "start": "node api/index.js"
@@ -12,4 +12,3 @@
     "express": "^4.19.2"
   }
 }
-
