@@ -1,14 +1,12 @@
 const express = require('express');
 const cors = require('cors');
-const { Client } = require('soundcloud-scraper');
+const axios = require('axios');
 
 const app = express();
-const sc = new Client();
-
 app.use(cors());
 app.use(express.json());
 
-// Endpoint: Search by Song Name
+// Indian Music Search Endpoint
 app.get('/api/search', async (req, res) => {
   const query = req.query.q;
   const limit = req.query.limit ? parseInt(req.query.limit) : 20;
@@ -16,71 +14,67 @@ app.get('/api/search', async (req, res) => {
   if (!query) {
     return res.status(400).json({
       success: false,
-      error: "Query parameter 'q' is required (e.g. /api/search?q=faded&limit=10)"
+      error: "Query parameter 'q' is required (e.g. /api/search?q=kesariya)"
     });
   }
 
   try {
-    const searchResults = await sc.search(query, "track");
+    // Primary open API endpoint for Indian tracks
+    const response = await axios.get(`https://saavn.dev/api/search/songs?query=${encodeURIComponent(query)}&limit=${limit}`);
 
-    if (!searchResults || searchResults.length === 0) {
+    if (!response.data || !response.data.success || !response.data.data.results) {
       return res.json({ success: true, count: 0, tracks: [] });
     }
 
-    const targetResults = (limit <= 0) ? searchResults : searchResults.slice(0, limit);
+    const songs = response.data.data.results;
 
-    const formattedTracks = await Promise.all(
-      targetResults.map(async (track) => {
-        try {
-          const songInfo = await sc.getSongInfo(track.url);
-          const streamUrl = await songInfo.downloadProgressive();
+    const formattedTracks = songs.map(song => {
+      // Best quality audio stream URL select karna
+      const downloadUrlObj = song.downloadUrl ? (
+        song.downloadUrl.find(u => u.quality === '320kbps') ||
+        song.downloadUrl.find(u => u.quality === '160kbps') ||
+        song.downloadUrl[song.downloadUrl.length - 1]
+      ) : null;
 
-          return {
-            id: track.id || null,
-            title: songInfo.title || track.title,
-            duration: Math.floor(songInfo.duration / 1000), // Seconds
-            thumbnail: songInfo.thumbnail ? songInfo.thumbnail.replace('-large', '-t500x500') : null,
-            cdn_url: streamUrl || null,
-            artist: songInfo.author ? songInfo.author.name : null
-          };
-        } catch (innerErr) {
-          // Individual track fail hone par null return karein taaki poora request crash na ho
-          return null;
-        }
-      })
-    );
+      // Best quality image thumbnail
+      const imageObj = song.image ? (
+        song.image.find(i => i.quality === '500x500') ||
+        song.image[song.image.length - 1]
+      ) : null;
 
-    const validTracks = formattedTracks.filter(t => t !== null);
+      return {
+        id: song.id,
+        title: song.name,
+        artist: song.artists?.primary?.[0]?.name || song.album?.name || "Unknown Artist",
+        duration: song.duration ? parseInt(song.duration) : 0, // Seconds mein
+        thumbnail: imageObj ? imageObj.url : null,
+        cdn_url: downloadUrlObj ? downloadUrlObj.url : null
+      };
+    });
 
     res.json({
       success: true,
-      count: validTracks.length,
-      tracks: validTracks
+      count: formattedTracks.length,
+      tracks: formattedTracks
     });
 
   } catch (err) {
-    // FIX: Circular structure avoid karne ke liye sirf error message string bhej rahe hain
-    const errorMessage = typeof err === 'string' ? err : (err.message || "Unknown error occurred");
-
     res.status(500).json({
       success: false,
-      error: "Failed to search SoundCloud",
-      details: errorMessage
+      error: "Failed to fetch music data",
+      details: err.message || "Internal Server Error"
     });
   }
 });
 
 app.get('/', (req, res) => {
-  res.json({ status: "SoundCloud Search API Active" });
+  res.json({ status: "Indian Music Search API is running fine!" });
 });
 
-// Local testing ke liye
 if (process.env.NODE_ENV !== 'production') {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 }
 
+module.app = app;
 module.exports = app;
-
