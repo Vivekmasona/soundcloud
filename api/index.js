@@ -4,7 +4,6 @@ const axios = require("axios");
 const app = express();
 app.use(express.json());
 
-// Aapka Default Poster URL
 const DEFAULT_POSTER_URL = "https://i.ibb.co/nqFL3YnZ/1780943911545.png";
 
 let CLIENT_ID = null;
@@ -36,12 +35,11 @@ async function getTrackIdByName(query) {
     const res = await axios.get("https://api-v2.soundcloud.com/search/tracks", {
         params: { q: query, client_id, limit: 5 }
     });
-    // Poster wale track ko preference denge
     const track = res.data.collection.find(t => t.artwork_url !== null) || res.data.collection[0];
     return track || null;
 }
 
-// --- Info Endpoint (Song details + stream link) ---
+// --- Info Endpoint (Ab yeh seedha direct CDN Stream URL dega JSON mein) ---
 app.get("/info", async (req, res) => {
     const name = req.query.name;
     if (!name) return res.status(400).json({ error: "name required" });
@@ -50,19 +48,28 @@ app.get("/info", async (req, res) => {
         const track = await getTrackIdByName(name);
         if (!track) return res.status(404).json({ message: "Not found" });
         
+        const client_id = await getClientId();
+        const progressive = track.media?.transcodings?.find(x => x.format.protocol === "progressive");
+        
+        let directStreamUrl = null;
+        if (progressive) {
+            const auth = await axios.get(progressive.url, { params: { client_id } });
+            directStreamUrl = auth.data?.url || null;
+        }
+
         res.json({
             success: true,
             title: track.title,
             artist: track.user?.username || "Unknown",
             poster: track.artwork_url ? track.artwork_url.replace("large", "t500x500") : DEFAULT_POSTER_URL,
-            stream: `/play?id=${track.id}`
+            stream: directStreamUrl // Yeh raha 100% direct playable CDN URL!
         });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
 });
 
-// --- Play / Stream Redirect Endpoint ---
+// Play route abhi bhi backup ke liye rakh sakte hain
 app.get("/play", async (req, res) => {
     const id = req.query.id;
     if (!id) return res.status(400).json({ error: "id required" });
@@ -71,12 +78,7 @@ app.get("/play", async (req, res) => {
         const client_id = await getClientId();
         const trackRes = await axios.get(`https://api-v2.soundcloud.com/tracks/${id}`, { params: { client_id } });
         const track = trackRes.data;
-
-        if (!track) return res.status(404).json({ message: "Song not found" });
-
         const progressive = track.media?.transcodings?.find(x => x.format.protocol === "progressive");
-        if (!progressive) return res.status(404).json({ message: "Stream not found" });
-
         const auth = await axios.get(progressive.url, { params: { client_id } });
         if (auth.data.url) return res.redirect(auth.data.url);
         
@@ -92,3 +94,4 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 module.exports = app;
+
