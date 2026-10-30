@@ -8,10 +8,9 @@ const sc = new Client();
 app.use(cors());
 app.use(express.json());
 
-// Endpoint: Search by Song Name (No strict limits)
+// Endpoint: Search by Song Name
 app.get('/api/search', async (req, res) => {
   const query = req.query.q;
-  // Default limit 20 set ki hai, lekin aap ?limit=50 ya ?limit=0 (unlimited ke liye) pass kar sakte hain
   const limit = req.query.limit ? parseInt(req.query.limit) : 20;
 
   if (!query) {
@@ -28,7 +27,6 @@ app.get('/api/search', async (req, res) => {
       return res.json({ success: true, count: 0, tracks: [] });
     }
 
-    // Limit apply karna (agar limit=0 ya -1 ho toh saare results fetch honge)
     const targetResults = (limit <= 0) ? searchResults : searchResults.slice(0, limit);
 
     const formattedTracks = await Promise.all(
@@ -40,12 +38,13 @@ app.get('/api/search', async (req, res) => {
           return {
             id: track.id || null,
             title: songInfo.title || track.title,
-            duration: Math.floor(songInfo.duration / 1000), // Seconds mein duration
+            duration: Math.floor(songInfo.duration / 1000), // Seconds
             thumbnail: songInfo.thumbnail ? songInfo.thumbnail.replace('-large', '-t500x500') : null,
             cdn_url: streamUrl || null,
             artist: songInfo.author ? songInfo.author.name : null
           };
-        } catch (err) {
+        } catch (innerErr) {
+          // Individual track fail hone par null return karein taaki poora request crash na ho
           return null;
         }
       })
@@ -60,16 +59,19 @@ app.get('/api/search', async (req, res) => {
     });
 
   } catch (err) {
+    // FIX: Circular structure avoid karne ke liye sirf error message string bhej rahe hain
+    const errorMessage = typeof err === 'string' ? err : (err.message || "Unknown error occurred");
+
     res.status(500).json({
       success: false,
       error: "Failed to search SoundCloud",
-      details: err.message
+      details: errorMessage
     });
   }
 });
 
 app.get('/', (req, res) => {
-  res.json({ status: "SoundCloud Search API Active (No Limits)" });
+  res.json({ status: "SoundCloud Search API Active" });
 });
 
 // Local testing ke liye
@@ -81,3 +83,4 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 module.exports = app;
+
