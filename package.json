@@ -1,7 +1,7 @@
 {
-  "name": "indian-music-backend",
+  "name": "audius-music-backend",
   "version": "1.0.0",
-  "description": "Indian Music Search & CDN Stream API for Vercel",
+  "description": "SoundCloud-like Audius Music Search & CDN Stream API for Vercel",
   "main": "api/index.js",
   "scripts": {
     "start": "node api/index.js"
