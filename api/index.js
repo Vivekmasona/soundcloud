@@ -34,31 +34,13 @@ async function getFreshClientId() {
     } catch (e) {
         console.error("ID extraction failed, using fallback");
     }
+    // Reliable static fallback client_id
     CLIENT_ID = '2t9mqaC7aZrr6v6scvW6Y06Z7v0K8A1Z'; 
     LAST_UPDATE = Date.now();
     return CLIENT_ID;
 }
 
-// --- Helper: Extract direct audio stream URL from track object ---
-async function getDirectAudioUrl(track, client_id) {
-    try {
-        const progressiveTranscoding = track.media?.transcodings?.find(
-            t => t.format.protocol === 'progressive'
-        );
-
-        if (progressiveTranscoding && progressiveTranscoding.url) {
-            const streamAuthResponse = await axios.get(`${progressiveTranscoding.url}?client_id=${client_id}`);
-            if (streamAuthResponse.data && streamAuthResponse.data.url) {
-                return streamAuthResponse.data.url;
-            }
-        }
-    } catch (e) {
-        // Stream fetch fail
-    }
-    return null;
-}
-
-// MAIN PLAY ROUTE: Guaranteed working audio stream redirect
+// MAIN PLAY ROUTE: Fast and robust stream resolver with fallback loop
 app.get('/play', async (req, res) => {
     const songQuery = req.query.query;
     const trackId = req.query.id;
@@ -69,47 +51,66 @@ app.get('/play', async (req, res) => {
 
         if (songQuery) {
             const searchResponse = await axios.get(`https://api-v2.soundcloud.com/search/tracks`, {
-                params: { q: songQuery, client_id: dynamicId, limit: 15 }
+                params: { q: songQuery, client_id: dynamicId, limit: 10 }
             });
-
             const collection = searchResponse.data?.collection;
             if (collection && collection.length > 0) {
-                const originals = collection.filter(track => {
-                    const title = track.title.toLowerCase();
-                    return !title.includes('slowed') && !title.includes('reverb') && !title.includes('remix');
-                });
-                tracksToTry = [...originals, ...collection.filter(t => !originals.includes(t))];
+                tracksToTry = collection;
             }
         } else if (trackId) {
-            const trackResponse = await axios.get(`https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${dynamicId}`);
+            const trackResponse = await axios.get(`https://api-v2.soundcloud.com/tracks/${trackId}`, {
+                params: { client_id: dynamicId }
+            });
             if (trackResponse.data) tracksToTry.push(trackResponse.data);
         } else {
             res.setHeader('Content-Type', 'application/json');
             return res.status(400).json({ error: "Please provide either a 'query' or an 'id' parameter." });
         }
 
-        // Loop karke check karo ki kis track ka direct audio link mil raha hai
+        if (tracksToTry.length === 0) {
+            res.setHeader('Content-Type', 'application/json');
+            return res.status(404).json({ error: "No tracks found for this query." });
+        }
+
+        // Loop through tracks to find a working progressive audio stream
         for (let targetTrack of tracksToTry) {
-            const audioUrl = await getDirectAudioUrl(targetTrack, dynamicId);
-            if (audioUrl) {
-                return res.redirect(audioUrl);
+            try {
+                const progressiveTranscoding = targetTrack.media?.transcodings?.find(
+                    t => t.format.protocol === 'progressive'
+                );
+
+                if (progressiveTranscoding && progressiveTranscoding.url) {
+                    const streamAuthResponse = await axios.get(`${progressiveTranscoding.url}`, {
+                        params: { client_id: dynamicId }
+                    });
+                    
+                    if (streamAuthResponse.data && streamAuthResponse.data.url) {
+                        return res.redirect(streamAuthResponse.data.url);
+                    }
+                }
+            } catch (innerErr) {
+                // Continue to the next track if one fails
+                continue;
             }
         }
 
         res.setHeader('Content-Type', 'application/json');
-        return res.status(404).json({ error: "No playable audio stream found for this query." });
+        return res.status(404).json({ error: "No playable audio stream found." });
 
     } catch (error) {
         res.setHeader('Content-Type', 'application/json');
-        return res.status(500).json({ error: "Direct playback failed", details: error.message });
+        return res.status(500).json({ error: "Playback failed", details: error.message });
     }
 });
 
-// Search route: Sirf wahi gaane dikhayega jinka audio stream available hoga
+// Search route: Fast metadata listing without blocking stream checks
 app.get('/search', async (req, res) => {
     const songQuery = req.query.query;
     res.setHeader('Content-Type', 'application/json');
-    if (!songQuery) return res.status(400).json({ error: "Please provide a 'query' parameter." });
+    
+    if (!songQuery) {
+        return res.status(400).json({ error: "Please provide a 'query' parameter (e.g., /search?query=kesariya)." });
+    }
     
     try {
         const dynamicId = await getFreshClientId();
@@ -122,36 +123,22 @@ app.get('/search', async (req, res) => {
             return res.status(404).json({ success: false, message: "No songs found." });
         }
 
-        const validResults = [];
-        for (const track of collection) {
-            // Check karo ki audio stream mil sakta hai ya nahi
-            const audioUrl = await getDirectAudioUrl(track, dynamicId);
-            if (audioUrl) {
-                validResults.push({
-                    id: track.id,
-                    title: track.title,
-                    album: track.publisher_metadata?.album_title || "Single",
-                    image: track.artwork_url 
-                        ? track.artwork_url.replace('large', 't500x500') 
-                        : (track.user?.avatar_url ? track.user.avatar_url.replace('large', 't500x500') : 'https://soundcloud.com/favicon.ico'),
-                    artist: track.user?.username || "Unknown Artist",
-                    stream_url: `https://${req.get('host')}/play?id=${track.id}`
-                });
-            }
-            // Agar 5 valid gaane mil gaye toh loop rok do taaki fast response mile
-            if (validResults.length >= 8) break;
-        }
+        const results = collection.map(track => ({
+            id: track.id,
+            title: track.title,
+            album: track.publisher_metadata?.album_title || "Single",
+            image: track.artwork_url 
+                ? track.artwork_url.replace('large', 't500x500') 
+                : (track.user?.avatar_url ? track.user.avatar_url.replace('large', 't500x500') : 'https://soundcloud.com/favicon.ico'),
+            artist: track.user?.username || "Unknown Artist",
+            stream_url: `https://${req.get('host')}/play?id=${track.id}`
+        }));
 
-        if (validResults.length === 0) {
-            return res.status(404).json({ success: false, message: "No playable audio streams found." });
-        }
-
-        return res.status(200).json({ success: true, count: validResults.length, results: validResults });
+        return res.status(200).json({ success: true, count: results.length, results });
 
     } catch (error) { 
-        return res.status(500).json({ error: "Search failed", details: error.message }); 
+        return res.status(500).json({ success: false, error: "Search failed", details: error.message }); 
     }
 });
 
 module.exports = app;
-
