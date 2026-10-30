@@ -30,46 +30,60 @@ async function getClientId() {
     return CLIENT_ID;
 }
 
-async function getTrackIdByName(query) {
-    const client_id = await getClientId();
-    const res = await axios.get("https://api-v2.soundcloud.com/search/tracks", {
-        params: { q: query, client_id, limit: 5 }
-    });
-    const track = res.data.collection.find(t => t.artwork_url !== null) || res.data.collection[0];
-    return track || null;
-}
-
-// --- Info Endpoint (Ab yeh seedha direct CDN Stream URL dega JSON mein) ---
+// --- Info Endpoint with Auto-Fallback Loop ---
 app.get("/info", async (req, res) => {
     const name = req.query.name;
     if (!name) return res.status(400).json({ error: "name required" });
 
     try {
-        const track = await getTrackIdByName(name);
-        if (!track) return res.status(404).json({ message: "Not found" });
-        
         const client_id = await getClientId();
-        const progressive = track.media?.transcodings?.find(x => x.format.protocol === "progressive");
-        
+        const searchRes = await axios.get("https://api-v2.soundcloud.com/search/tracks", {
+            params: { q: name, client_id, limit: 10 }
+        });
+
+        const collection = searchRes.data?.collection;
+        if (!collection || collection.length === 0) {
+            return res.status(404).json({ success: false, message: "Not found" });
+        }
+
+        let validTrack = null;
         let directStreamUrl = null;
-        if (progressive) {
-            const auth = await axios.get(progressive.url, { params: { client_id } });
-            directStreamUrl = auth.data?.url || null;
+
+        // Loop through tracks until we find one with a 100% working stream URL
+        for (const track of collection) {
+            const progressive = track.media?.transcodings?.find(x => x.format.protocol === "progressive");
+            if (progressive && progressive.url) {
+                try {
+                    const auth = await axios.get(progressive.url, { params: { client_id } });
+                    if (auth.data?.url) {
+                        validTrack = track;
+                        directStreamUrl = auth.data.url;
+                        break; // Working stream mil gaya, loop roko!
+                    }
+                } catch (err) {
+                    // Agar ek fail ho, toh agla track try karo
+                    continue;
+                }
+            }
+        }
+
+        if (!validTrack || !directStreamUrl) {
+            return res.status(404).json({ success: false, message: "No playable stream found for this query." });
         }
 
         res.json({
             success: true,
-            title: track.title,
-            artist: track.user?.username || "Unknown",
-            poster: track.artwork_url ? track.artwork_url.replace("large", "t500x500") : DEFAULT_POSTER_URL,
-            stream: directStreamUrl // Yeh raha 100% direct playable CDN URL!
+            title: validTrack.title,
+            artist: validTrack.user?.username || "Unknown",
+            poster: validTrack.artwork_url ? validTrack.artwork_url.replace("large", "t500x500") : DEFAULT_POSTER_URL,
+            stream: directStreamUrl // Ab yahan 100% working direct CDN link milega!
         });
     } catch (e) {
         res.status(500).json({ success: false, error: e.message });
     }
 });
 
-// Play route abhi bhi backup ke liye rakh sakte hain
+// Play redirect route
 app.get("/play", async (req, res) => {
     const id = req.query.id;
     if (!id) return res.status(400).json({ error: "id required" });
