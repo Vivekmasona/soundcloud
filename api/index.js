@@ -6,9 +6,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Public High-Speed Music Index Endpoint
-const API_BASE_URL = 'https://saavn.dev/api/search/songs';
+// SoundCloud Public v2 API Client ID (stable public key)
+const SC_CLIENT_ID = 'i1DEw9QY1gU8aR5L5hJ0L0eB5tV8Z6F1'; 
 
+// Search endpoint for Hindi, Bhojpuri, & all regional songs
 app.get('/api/search', async (req, res) => {
   const query = req.query.q;
   const limit = req.query.limit ? parseInt(req.query.limit) : 20;
@@ -16,49 +17,57 @@ app.get('/api/search', async (req, res) => {
   if (!query) {
     return res.status(400).json({
       success: false,
-      error: "Query parameter 'q' is required (e.g. /api/search?q=pawan singh bhojpuri)"
+      error: "Query parameter 'q' is required (e.g. /api/search?q=bhojpuri hit song)"
     });
   }
 
   try {
-    // Direct API call to fetch full regional Indian index
-    const response = await axios.get(API_BASE_URL, {
-      params: {
-        query: query,
-        limit: limit
-      },
-      timeout: 8000
-    });
+    // 1. SoundCloud v2 Search API call
+    const searchUrl = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${SC_CLIENT_ID}&limit=${limit}`;
+    const searchResponse = await axios.get(searchUrl);
 
-    if (!response.data || !response.data.success || !response.data.data.results) {
+    const tracks = searchResponse.data.collection;
+
+    if (!tracks || tracks.length === 0) {
       return res.json({ success: true, count: 0, tracks: [] });
     }
 
-    const results = response.data.data.results;
+    // 2. Format tracks and extract streaming URLs
+    const formattedTracks = await Promise.all(
+      tracks.map(async (track) => {
+        try {
+          // Track ka stream URL nikalne ke liye media transcodings check karein
+          const transcodings = track.media?.transcodings || [];
+          const progressiveStream = transcodings.find(t => t.format.protocol === 'progressive');
 
-    const formattedTracks = results.map(song => {
-      // 1. Direct CDN MP3 Stream URL selection (Preferring 320kbps / 160kbps)
-      const downloadUrls = song.downloadUrl || [];
-      const bestAudio = downloadUrls.find(u => u.quality === '320kbps') ||
-                        downloadUrls.find(u => u.quality === '160kbps') ||
-                        downloadUrls[downloadUrls.length - 1];
+          let cdnUrl = null;
+          if (progressiveStream && progressiveStream.url) {
+            // Stream URL ko actual playable mp3 link mein convert karna
+            const streamRes = await axios.get(`${progressiveStream.url}?client_id=${SC_CLIENT_ID}`);
+            cdnUrl = streamRes.data.url;
+          }
 
-      // 2. High Quality Artwork/Thumbnail selection
-      const images = song.image || [];
-      const bestImage = images.find(i => i.quality === '500x500') ||
-                        images[images.length - 1];
+          // Thumbnail size upgrade (-large to t500x500)
+          let thumbnail = track.artwork_url || track.user?.avatar_url || null;
+          if (thumbnail) {
+            thumbnail = thumbnail.replace('-large', '-t500x500');
+          }
 
-      return {
-        id: song.id,
-        title: song.name,
-        artist: song.artists?.primary?.[0]?.name || song.album?.name || "Unknown Artist",
-        duration: song.duration ? parseInt(song.duration) : 0, // Duration in seconds
-        thumbnail: bestImage ? bestImage.url : null,
-        cdn_url: bestAudio ? bestAudio.url : null
-      };
-    });
+          return {
+            id: track.id,
+            title: track.title,
+            artist: track.user?.username || "Unknown Artist",
+            duration: track.duration ? Math.floor(track.duration / 1000) : 0, // Seconds mein
+            thumbnail: thumbnail,
+            cdn_url: cdnUrl
+          };
+        } catch (err) {
+          return null; // Agar koi track fail ho toh skip kar do
+        }
+      })
+    );
 
-    const validTracks = formattedTracks.filter(t => t.cdn_url !== null);
+    const validTracks = formattedTracks.filter(t => t !== null && t.cdn_url !== null);
 
     res.json({
       success: true,
@@ -69,14 +78,14 @@ app.get('/api/search', async (req, res) => {
   } catch (err) {
     res.status(500).json({
       success: false,
-      error: "Failed to fetch music tracks",
+      error: "Failed to search SoundCloud",
       details: err.message
     });
   }
 });
 
 app.get('/', (req, res) => {
-  res.json({ status: "Regional Music API Service is running perfectly!" });
+  res.json({ status: "SoundCloud Hindi/Bhojpuri Search API Active!" });
 });
 
 if (process.env.NODE_ENV !== 'production') {
