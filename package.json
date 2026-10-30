@@ -1,0 +1,14 @@
+{
+  "name": "soundcloud-search-backend",
+  "version": "1.0.0",
+  "description": "SoundCloud search and stream extractor backend for Vercel",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "soundcloud-scraper": "^5.0.3"
+  }
+}
