@@ -6,10 +6,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Audius Public Discovery Node (Open Music Index)
-const AUDIUS_NODE = 'https://discoveryprovider.audius.co';
+// Public High-Speed Music Index Endpoint
+const API_BASE_URL = 'https://saavn.dev/api/search/songs';
 
-// Search endpoint (SoundCloud jaisa index search)
 app.get('/api/search', async (req, res) => {
   const query = req.query.q;
   const limit = req.query.limit ? parseInt(req.query.limit) : 20;
@@ -17,60 +16,67 @@ app.get('/api/search', async (req, res) => {
   if (!query) {
     return res.status(400).json({
       success: false,
-      error: "Query parameter 'q' is required (e.g. /api/search?q=lofi)"
+      error: "Query parameter 'q' is required (e.g. /api/search?q=pawan singh bhojpuri)"
     });
   }
 
   try {
-    // Audius tracks search API call
-    const response = await axios.get(`${AUDIUS_NODE}/v1/tracks/search`, {
+    // Direct API call to fetch full regional Indian index
+    const response = await axios.get(API_BASE_URL, {
       params: {
         query: query,
         limit: limit
-      }
+      },
+      timeout: 8000
     });
 
-    const tracks = response.data.data;
-
-    if (!tracks || tracks.length === 0) {
+    if (!response.data || !response.data.success || !response.data.data.results) {
       return res.json({ success: true, count: 0, tracks: [] });
     }
 
-    // Format data into your required clean JSON structure
-    const formattedTracks = tracks.map(track => {
-      // Direct stream CDN URL
-      const cdnUrl = `${AUDIUS_NODE}/v1/tracks/${track.id}/stream`;
-      
-      // Best artwork/thumbnail selection
-      const artwork = track.artwork ? (track.artwork['480x480'] || track.artwork['150x150'] || null) : null;
+    const results = response.data.data.results;
+
+    const formattedTracks = results.map(song => {
+      // 1. Direct CDN MP3 Stream URL selection (Preferring 320kbps / 160kbps)
+      const downloadUrls = song.downloadUrl || [];
+      const bestAudio = downloadUrls.find(u => u.quality === '320kbps') ||
+                        downloadUrls.find(u => u.quality === '160kbps') ||
+                        downloadUrls[downloadUrls.length - 1];
+
+      // 2. High Quality Artwork/Thumbnail selection
+      const images = song.image || [];
+      const bestImage = images.find(i => i.quality === '500x500') ||
+                        images[images.length - 1];
 
       return {
-        id: track.id,
-        title: track.title,
-        artist: track.user ? track.user.name : "Unknown Artist",
-        duration: track.duration || 0, // Seconds mein duration
-        thumbnail: artwork,
-        cdn_url: cdnUrl
+        id: song.id,
+        title: song.name,
+        artist: song.artists?.primary?.[0]?.name || song.album?.name || "Unknown Artist",
+        duration: song.duration ? parseInt(song.duration) : 0, // Duration in seconds
+        thumbnail: bestImage ? bestImage.url : null,
+        cdn_url: bestAudio ? bestAudio.url : null
       };
     });
 
+    const validTracks = formattedTracks.filter(t => t.cdn_url !== null);
+
     res.json({
       success: true,
-      count: formattedTracks.length,
-      tracks: formattedTracks
+      count: validTracks.length,
+      tracks: validTracks
     });
 
   } catch (err) {
     res.status(500).json({
       success: false,
-      error: "Failed to fetch music from Audius index",
+      error: "Failed to fetch music tracks",
       details: err.message
     });
   }
 });
 
 app.get('/', (req, res) => {
-  res.json({ status: "Audius Music Index API is running smoothly!" });
+  res.json({ status: "Regional Music API Service is running perfectly!" });
 });
 
 if (process.env.NODE_ENV !== 'production') {
